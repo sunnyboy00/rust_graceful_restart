@@ -36,7 +36,6 @@ fn main() {
         pool.spawn_ok(async move {
             let mut buf = [0; 512];
             loop {
-                println!("{}", is_init.clone());
                 let buf_size = stream.read(&mut buf).unwrap_or(0);
                 if buf_size == 0 {
                     return;
