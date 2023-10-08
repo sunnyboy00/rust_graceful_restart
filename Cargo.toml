@@ -1,12 +1,25 @@
 [package]
-name = "rust_tcp_reload"
+name = "rust_graceful_restart"
 version = "0.1.0"
-authors = ["xinyi"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+
+# axum
+axum = { version = "*", features = ["http2"] }
+axum-server = { version = "*", features = ["tls-rustls"] }
+axum-extra = { version = "*", features = ["spa"] }
+
+tokio = { version = "*", features = [
+  "rt-multi-thread",
+  "macros",
+  "parking_lot",
+  "signal",
+] }
+
+
 libc = "0.2"
-signal-hook = "0.3.8"
-futures = { version = "0.3.14", features = ["thread-pool"] }
+
+
