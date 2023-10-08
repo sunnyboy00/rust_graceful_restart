@@ -1,95 +1,130 @@
-use signal_hook::consts::*;
+// use std::time::Duration;
+
+use std::{net::SocketAddr, str::FromStr};
+
+//
+
+use axum::{http::StatusCode, routing::get, Router};
+
 use std::{
     env::args,
-    io::{Read, Write},
-    net::{TcpListener, ToSocketAddrs},
+    net::TcpListener,
     os::unix::{
         io::{AsRawFd, FromRawFd, RawFd},
         process::CommandExt,
     },
-    thread,
+    process,
 };
+use tokio::signal;
 
-static mut LISTENER: Option<TcpListener> = None;
-fn main() {
-    let pool = futures::executor::ThreadPool::new().unwrap();
-    let mut is_init = true;
+
+
+#[tokio::main]
+async fn main() {
+  
+        let addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
+
+        let mut is_init = true;
     let mut fd: Option<RawFd> = None;
+
     println!("{:#?}", args().collect::<Vec<String>>());
+
     let args = args().collect::<Vec<String>>();
+
     if args.len() > 1 {
         is_init = false;
+
         fd = match args[args.len() - 1].parse::<i32>() {
             Ok(i) => Some(i),
             Err(_) => None,
         };
     }
-    let (_addr, listener) = start_reload("127.0.0.1:8080", is_init, fd).unwrap();
+
+   
+
+    let listener = if is_init {
+        std::net::TcpListener::bind(addr).unwrap()
+    } else {
+        println!("TcpListener::from_raw_fd");
+        unsafe { std::net::TcpListener::from_raw_fd(fd.unwrap()) }
+    };
+
     let fork_fd = listener.as_raw_fd();
-    //let mut f = unsafe { File::from_raw_fd(fd) };
-    thread::spawn(move || {
-        listen_signl(fork_fd);
-    });
 
-    loop {
-        let (mut stream, _addr) = listener.accept().unwrap();
-        pool.spawn_ok(async move {
-            let mut buf = [0; 512];
-            loop {
-                let buf_size = stream.read(&mut buf).unwrap_or(0);
-                if buf_size == 0 {
-                    return;
-                }
-                if stream.write(&buf[..buf_size]).is_err() {
-                    return;
-                };
-                if stream.flush().is_err() {
-                    return;
-                };
-            }
-        });
-    }
-}
-// 使用kill -USR1 pid重启后，子进程会继承父进程的socket文件描述符
-fn start_reload<A>(
-    addr: A,
-    is_init: bool,
-    fd: Option<RawFd>,
-) -> Result<(String, TcpListener), &'static str>
-where
-    A: ToSocketAddrs,
-{
-    unsafe {
-        LISTENER = if is_init {
-            Some(std::net::TcpListener::bind(addr).unwrap())
-        } else {
-            Some(std::net::TcpListener::from_raw_fd(fd.unwrap()))
-        };
-        match LISTENER.take() {
-            Some(listener) => Ok((listener.local_addr().unwrap().to_string(), listener)),
-            None => Err("listener err"),
-        }
-    }
+
+        let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+
+        axum::Server::from_tcp(listener)
+            .expect("listen from_tcp error")
+            .serve(app.into_make_service())
+            .with_graceful_shutdown(shutdown_signal( fork_fd))
+            .await
+            .unwrap();
+        
+   // });
+
+    println!("main quit !!!")
 }
 
-fn listen_signl(fd: RawFd) {
-    let sig_s = vec![SIGUSR1];
-    let mut signals = signal_hook::iterator::Signals::new(&sig_s).expect("信号监听失败");
-    for signal in signals.forever() {
-        if signal == SIGUSR1 {
+async fn shutdown_signal( fd: RawFd) {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+   
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    let sigusr1 = async {
+        signal::unix::signal(signal::unix::SignalKind::user_defined1())
+            .expect("failed to install signal handler user_defined1")
+            .recv()
+            .await;
+    };
+  
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+        _ = sigusr1 => {
             unsafe {
                 let flags = libc::fcntl(fd, libc::F_GETFD);
                 // 因为rust中创建的文件描述符会自动close，此处要进行调整，不然会报错 无效的描述符
                 libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            let _ = std::process::Command::new(args().collect::<Vec<String>>()[0].to_string())
-                .args(std::env::args().skip(1))
+
+            println!(" get signal usr1");
+            let cmdname = if args().collect::<Vec<String>>()[0].contains("1") {
+                args().collect::<Vec<String>>()[0].trim_end_matches("1").to_string()
+            } else {
+                args().collect::<Vec<String>>()[0].to_string() + "1"
+            };
+
+            let _ = std::process::Command::new(cmdname)
                 .arg(&fd.to_string())
+
                 .envs(std::env::vars())
                 .stdin(std::process::Stdio::inherit())
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
-                .exec();
-        }
+                .spawn();
+
+                println!(" signal exit");
+        },
+
     }
+
+    println!("signal received, starting graceful shutdown");
 }
+
+async fn handle_404() -> (StatusCode, &'static str) {
+    (StatusCode::NOT_FOUND, "Not found")
+}
+
+
